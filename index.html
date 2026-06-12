@@ -111,8 +111,8 @@
 
   /* topplista */
   #board {
-    top: calc(50% + min(36vw, 30vh) + 44px);
-    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    top: calc(56px + env(safe-area-inset-top, 0px));
+    bottom: calc(50% + min(36vw, 30vh) + 36px);
     left: 50%;
     transform: translateX(-50%);
     width: min(320px, 84vw);
@@ -120,8 +120,9 @@
     transition: opacity 0.6s;
   }
   body[data-state="play"] #board { opacity: 0; }
-  #board .btitle { color: var(--amber); margin-bottom: 14px; text-align: center; }
-  #board .brow { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; color: var(--dim); }
+  #board .btitle { color: var(--amber); margin-bottom: 10px; text-align: center; }
+  #board .btitle .pend { margin-left: 8px; animation: breathe 1.6s ease-in-out infinite; }
+  #board .brow { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; color: var(--dim); }
   #board .brow .rank { width: 16px; text-align: right; opacity: 0.7; flex: none; }
   #board .brow .lead { flex: 1; border-bottom: 1px dotted rgba(234,230,220,0.14); min-width: 14px; }
   #board .brow .pts { color: rgba(234,230,220,0.62); }
@@ -264,7 +265,7 @@
     cvs.width = W * dpr; cvs.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     CX = W / 2; CY = H / 2;
-    R = Math.min(W * 0.36, H * 0.30);
+    R = Math.max(Math.min(W * 0.36, H * 0.30), 80);
   }
   window.addEventListener("resize", resize);
   resize();
@@ -361,49 +362,122 @@
     if (state !== "play") openName();
   });
 
+  // Kö av osynkade resultat + mina bästa rundor — överlever omladdning.
+  let queue = [];
+  let myruns = [];
+  try { queue = JSON.parse(localStorage.getItem("puls.queue") || "[]") || []; } catch (_) {}
+  try { myruns = JSON.parse(localStorage.getItem("puls.myruns") || "[]") || []; } catch (_) {}
+  let syncTimer = null, syncBusy = false, syncDelay = 0;
+
+  function saveQueue() { localStorage.setItem("puls.queue", JSON.stringify(queue)); }
+  function sortScores(a) { return a.sort((x, y) => y.s - x.s || (x.t || 0) - (y.t || 0)); }
+  function qualifies(sc, scores) {
+    if (sc <= 0) return false;
+    if (scores.length < 50) return true;
+    return sc > scores[scores.length - 1].s;
+  }
+  // Slår ihop server + egna poster: unika (namn, poäng), max 10 per namn, topp 50.
+  function mergeScores(server, extra) {
+    const seen = new Map();
+    for (const e of server.concat(extra)) {
+      if (!e || typeof e.n !== "string" || !isFinite(+e.s)) continue;
+      const k = e.n + " " + (+e.s);
+      const prev = seen.get(k);
+      if (!prev || (+e.t || 0) < (+prev.t || 0)) seen.set(k, { n: e.n.slice(0, 12), s: +e.s, t: +e.t || 0 });
+    }
+    const perName = {};
+    return sortScores([...seen.values()])
+      .filter(e => (perName[e.n] = (perName[e.n] || 0) + 1) <= 10)
+      .slice(0, 50);
+  }
+
   function renderBoard() {
-    if (!board.length) { boardEl.innerHTML = ""; return; }
-    const rows = board.slice().sort((a, b) => b.s - a.s).slice(0, 10);
-    let h = '<div class="btitle">TOPPLISTA</div>';
+    if (!board.length && !queue.length) { boardEl.innerHTML = ""; return; }
+    const rows = sortScores(mergeScores(board, queue)).slice(0, 10);
+    let h = '<div class="btitle">TOPPLISTA' + (queue.length ? '<span class="pend">&#9679;</span>' : "") + "</div>";
     rows.forEach((e, i) => {
       const cls = "brow" + (e.n === playerName ? " me" : "") + (i === 0 ? " top" : "");
       h += '<div class="' + cls + '"><span class="rank">' + (i + 1) + '</span><span class="bname">'
-         + esc(e.n) + '</span><span class="lead"></span><span class="pts">' + (+e.s) + '</span></div>';
+         + esc(e.n) + '</span><span class="lead"></span><span class="pts">' + (+e.s) + "</span></div>";
     });
     boardEl.innerHTML = h;
   }
+
+  // Lägg saknade egna toppresultat i kön igen (självläkning om servern tappat dem).
+  function reconcile() {
+    let added = false;
+    for (const r of myruns) {
+      if (!r || !r.n) continue;
+      if (!qualifies(r.s, board)) continue;
+      const onBoard = board.some(x => x.n === r.n && +x.s === +r.s);
+      const inQueue = queue.some(x => x.n === r.n && +x.s === +r.s);
+      if (!onBoard && !inQueue) { queue.push({ n: r.n, s: +r.s, t: r.t || 0 }); added = true; }
+    }
+    if (added) { saveQueue(); renderBoard(); }
+    if (queue.length) scheduleSync(600);
+  }
+
   async function fetchBoard() {
     try {
       const r = await fetch(BOARD_URL, { cache: "no-store" });
       if (!r.ok) return;
       const d = await r.json();
-      if (d && Array.isArray(d.scores)) { board = d.scores; renderBoard(); }
+      if (d && Array.isArray(d.scores)) {
+        board = sortScores(d.scores.filter(e => e && typeof e.n === "string" && isFinite(+e.s)));
+        renderBoard();
+      }
     } catch (_) {}
+    reconcile();
   }
-  async function submitScore(sc) {
+
+  function scheduleSync(ms) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(syncNow, ms);
+  }
+  async function syncNow() {
+    if (syncBusy || !queue.length) return;
+    syncBusy = true;
+    let ok = false;
     try {
-      let scores = board;
-      try {
-        const r = await fetch(BOARD_URL, { cache: "no-store" });
-        if (r.ok) {
-          const d = await r.json();
-          if (d && Array.isArray(d.scores)) scores = d.scores;
-        }
-      } catch (_) {}
-      const entry = { n: playerName, s: sc, t: Date.now() };
-      const i = scores.findIndex(x => x.n === entry.n);
-      if (i >= 0) { if (entry.s > scores[i].s) scores[i] = entry; }
-      else scores.push(entry);
-      scores.sort((a, b) => b.s - a.s);
-      scores = scores.slice(0, 50);
-      await fetch(BOARD_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scores })
-      });
-      board = scores;
-      renderBoard();
+      const r = await fetch(BOARD_URL, { cache: "no-store" });
+      if (!r.ok) throw 0;
+      const d = await r.json();
+      const server = (d && Array.isArray(d.scores)) ? d.scores : [];
+      const merged = mergeScores(server, queue);
+      if (JSON.stringify(merged) !== JSON.stringify(mergeScores(server, []))) {
+        const p = await fetch(BOARD_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scores: merged })
+        });
+        if (!p.ok) throw 0;
+      }
+      board = merged;
+      queue = [];
+      saveQueue();
+      ok = true;
     } catch (_) {}
+    syncBusy = false;
+    if (ok) { syncDelay = 0; renderBoard(); }
+    else {
+      syncDelay = Math.min(Math.max(syncDelay * 2, 5000), 120000);
+      scheduleSync(syncDelay);
+    }
+  }
+
+  function recordRun(sc) {
+    if (!playerName || sc <= 0) return;
+    myruns.push({ n: playerName, s: sc, t: Date.now() });
+    myruns = sortScores(myruns).slice(0, 3);
+    localStorage.setItem("puls.myruns", JSON.stringify(myruns));
+    const dup = board.some(x => x.n === playerName && +x.s === sc) ||
+                queue.some(x => x.n === playerName && +x.s === sc);
+    if (!dup && qualifies(sc, board)) {
+      queue.push({ n: playerName, s: sc, t: Date.now() });
+      saveQueue();
+      renderBoard();
+      scheduleSync(50);
+    }
   }
 
   // ---------- game ----------
@@ -442,8 +516,7 @@
       localStorage.setItem("puls.best", best);
     }
     hintEl.textContent = "TRYCK FÖR OMSTART";
-    const mine = board.find(e => e.n === playerName);
-    if (playerName && score > 0 && (!mine || score > mine.s)) submitScore(score);
+    recordRun(score);
     sDeath();
     if (navigator.vibrate) navigator.vibrate(70);
   }
@@ -648,6 +721,7 @@
 
   // init: namn & topplista
   setWho();
+  renderBoard();
   fetchBoard();
   if (!playerName) openName();
 
@@ -656,6 +730,8 @@
     get state() { return state; },
     get score() { return score; },
     get best() { return best; },
+    get board() { return board; },
+    get queue() { return queue; },
     press,
     align() { angle = targetA; }
   };
