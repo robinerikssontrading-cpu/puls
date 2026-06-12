@@ -95,6 +95,98 @@
     #brand { left: calc(20px + env(safe-area-inset-left, 0px)); }
     #mute { right: calc(20px + env(safe-area-inset-right, 0px)); }
   }
+
+  /* spelarnamn-chip */
+  #who {
+    top: calc(26px + env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    cursor: pointer;
+    padding: 10px;
+    margin: -10px;
+    transition: color 0.25s, opacity 0.4s;
+  }
+  #who:hover { color: var(--ink); }
+  body[data-state="play"] #who { opacity: 0; pointer-events: none; }
+
+  /* topplista */
+  #board {
+    top: calc(50% + min(36vw, 30vh) + 44px);
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(320px, 84vw);
+    overflow: hidden;
+    transition: opacity 0.6s;
+  }
+  body[data-state="play"] #board { opacity: 0; }
+  #board .btitle { color: var(--amber); margin-bottom: 14px; text-align: center; }
+  #board .brow { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; color: var(--dim); }
+  #board .brow .rank { width: 16px; text-align: right; opacity: 0.7; flex: none; }
+  #board .brow .lead { flex: 1; border-bottom: 1px dotted rgba(234,230,220,0.14); min-width: 14px; }
+  #board .brow .pts { color: rgba(234,230,220,0.62); }
+  #board .brow.me, #board .brow.me .pts { color: var(--ink); }
+  #board .brow.top .pts { color: var(--amber); }
+  @media (min-aspect-ratio: 7/5) and (min-width: 1100px) {
+    #board {
+      left: auto; right: 5vw; top: 50%; bottom: auto;
+      transform: translateY(-50%);
+      width: 250px; max-height: 62vh;
+    }
+  }
+
+  /* namn-dialog */
+  [hidden] { display: none !important; }
+  #shade {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(2px);
+    z-index: 8;
+  }
+  #nameui {
+    position: fixed; z-index: 9;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(16,15,13,0.96);
+    border: 1px solid rgba(234,230,220,0.16);
+    padding: 30px 36px 26px;
+    text-align: center;
+  }
+  #nameui .nlabel {
+    font-size: 10px; letter-spacing: 0.34em;
+    color: var(--amber);
+    margin-bottom: 20px;
+  }
+  #namein {
+    display: block;
+    width: 210px;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(234,230,220,0.3);
+    color: var(--ink);
+    font-family: inherit;
+    font-weight: 300;
+    font-size: 17px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    text-align: center;
+    padding: 6px 0 10px;
+    outline: none;
+    caret-color: var(--amber);
+    margin: 0 auto 22px;
+  }
+  #namein::placeholder { color: rgba(234,230,220,0.25); }
+  #namein:focus { border-bottom-color: var(--amber); }
+  #nameok {
+    display: inline-block;
+    font-size: 10px; letter-spacing: 0.3em;
+    color: var(--ink);
+    border: 1px solid rgba(234,230,220,0.3);
+    padding: 10px 26px 9px;
+    cursor: pointer;
+    transition: color 0.25s, border-color 0.25s;
+  }
+  #nameok:hover { border-color: var(--amber); color: var(--amber); }
   body[data-state="play"] #hint { opacity: 0; }
   body[data-state="dead"] #hint { animation: breathe 1.6s ease-in-out infinite; }
   @keyframes breathe {
@@ -109,6 +201,14 @@
 <div id="brand" class="chrome"><b>PULS</b>&ensp;<i>&#9679;</i>&ensp;ETT KNAPPSPEL</div>
 <div id="mute" class="chrome"></div>
 <div id="hint" class="chrome">TRYCK N&Auml;R PUNKTEN &Auml;R I RINGEN &mdash; MELLANSLAG ELLER KLICK</div>
+<div id="who" class="chrome"></div>
+<div id="board" class="chrome" aria-live="polite"></div>
+<div id="shade" hidden></div>
+<div id="nameui" hidden>
+  <div class="nlabel">VEM SPELAR?</div>
+  <input id="namein" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="DITT NAMN">
+  <div id="nameok">KLAR</div>
+</div>
 
 <script>
 (() => {
@@ -118,6 +218,14 @@
   const ctx = cvs.getContext("2d");
   const hintEl = document.getElementById("hint");
   const muteEl = document.getElementById("mute");
+  const boardEl = document.getElementById("board");
+  const shadeEl = document.getElementById("shade");
+  const nameuiEl = document.getElementById("nameui");
+  const nameinEl = document.getElementById("namein");
+  const nameokEl = document.getElementById("nameok");
+  const whoEl = document.getElementById("who");
+
+  const BOARD_URL = "https://api.npoint.io/db636d8664bf357dff29";
 
   const COL = {
     bg: "#0E0D0B", ink: "#EAE6DC", dim: "rgba(234,230,220,0.30)",
@@ -211,6 +319,93 @@
   }
   setMuteLabel();
 
+  // ---------- namn & topplista ----------
+  let playerName = localStorage.getItem("puls.name") || "";
+  let nameMode = false;
+  let board = [];
+
+  function cleanName(s) {
+    return s.normalize("NFC").replace(/[^\p{L}\p{N} ._-]/gu, "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 12);
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function setWho() {
+    whoEl.textContent = playerName ? "SPELARE: " + playerName + " ▾" : "";
+  }
+  function openName() {
+    nameMode = true;
+    nameinEl.value = playerName;
+    shadeEl.hidden = false;
+    nameuiEl.hidden = false;
+    setTimeout(() => nameinEl.focus(), 50);
+  }
+  function confirmName() {
+    playerName = cleanName(nameinEl.value) || "ANONYM";
+    localStorage.setItem("puls.name", playerName);
+    shadeEl.hidden = true;
+    nameuiEl.hidden = true;
+    nameMode = false;
+    setWho();
+    renderBoard();
+  }
+  nameokEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+  nameokEl.addEventListener("click", (e) => { e.stopPropagation(); confirmName(); });
+  nameinEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); confirmName(); }
+    e.stopPropagation();
+  });
+  whoEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+  whoEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (state !== "play") openName();
+  });
+
+  function renderBoard() {
+    if (!board.length) { boardEl.innerHTML = ""; return; }
+    const rows = board.slice().sort((a, b) => b.s - a.s).slice(0, 10);
+    let h = '<div class="btitle">TOPPLISTA</div>';
+    rows.forEach((e, i) => {
+      const cls = "brow" + (e.n === playerName ? " me" : "") + (i === 0 ? " top" : "");
+      h += '<div class="' + cls + '"><span class="rank">' + (i + 1) + '</span><span class="bname">'
+         + esc(e.n) + '</span><span class="lead"></span><span class="pts">' + (+e.s) + '</span></div>';
+    });
+    boardEl.innerHTML = h;
+  }
+  async function fetchBoard() {
+    try {
+      const r = await fetch(BOARD_URL, { cache: "no-store" });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && Array.isArray(d.scores)) { board = d.scores; renderBoard(); }
+    } catch (_) {}
+  }
+  async function submitScore(sc) {
+    try {
+      let scores = board;
+      try {
+        const r = await fetch(BOARD_URL, { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          if (d && Array.isArray(d.scores)) scores = d.scores;
+        }
+      } catch (_) {}
+      const entry = { n: playerName, s: sc, t: Date.now() };
+      const i = scores.findIndex(x => x.n === entry.n);
+      if (i >= 0) { if (entry.s > scores[i].s) scores[i] = entry; }
+      else scores.push(entry);
+      scores.sort((a, b) => b.s - a.s);
+      scores = scores.slice(0, 50);
+      await fetch(BOARD_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scores })
+      });
+      board = scores;
+      renderBoard();
+    } catch (_) {}
+  }
+
   // ---------- game ----------
   function spawnTarget() {
     targetA = wrapPi(angle + dir * (0.75 + Math.random() * 1.9));
@@ -247,10 +442,13 @@
       localStorage.setItem("puls.best", best);
     }
     hintEl.textContent = "TRYCK FÖR OMSTART";
+    const mine = board.find(e => e.n === playerName);
+    if (playerName && score > 0 && (!mine || score > mine.s)) submitScore(score);
     sDeath();
     if (navigator.vibrate) navigator.vibrate(70);
   }
   function press() {
+    if (nameMode) return;
     audio();
     if (state === "menu") { startRun(); return; }
     if (state === "dead") {
@@ -271,7 +469,7 @@
   window.addEventListener("contextmenu", (e) => e.preventDefault());
   muteEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); toggleMute(); });
   window.addEventListener("keydown", (e) => {
-    if (e.repeat) return;
+    if (nameMode || e.repeat) return;
     if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); press(); }
     else if (e.code === "KeyM") toggleMute();
   });
@@ -447,6 +645,11 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  // init: namn & topplista
+  setWho();
+  fetchBoard();
+  if (!playerName) openName();
 
   // liten test-lucka (osynlig för spelaren)
   window.__puls = {
