@@ -2,7 +2,12 @@
 <html lang="sv">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0E0D0B">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PULS">
 <title>PULS</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23FFB000' stroke-width='2'/%3E%3Ccircle cx='16' cy='3' r='4' fill='%23EAE6DC'/%3E%3C/svg%3E">
 <style>
@@ -21,6 +26,8 @@
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
     cursor: crosshair;
   }
   body {
@@ -61,20 +68,32 @@
     z-index: 3;
     white-space: nowrap;
   }
-  #brand { top: 26px; left: 30px; }
+  #brand { top: calc(26px + env(safe-area-inset-top, 0px)); left: calc(30px + env(safe-area-inset-left, 0px)); }
   #brand b { color: var(--ink); font-weight: 400; }
   #brand i { color: var(--amber); font-style: normal; }
   #mute {
-    top: 26px; right: 30px;
+    top: calc(26px + env(safe-area-inset-top, 0px));
+    right: calc(30px + env(safe-area-inset-right, 0px));
     cursor: pointer;
+    padding: 10px;
+    margin: -10px;
     transition: color 0.25s;
   }
   #mute:hover { color: var(--ink); }
   #hint {
-    bottom: 34px; left: 50%;
+    bottom: calc(34px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
     transform: translateX(-50%);
     transition: opacity 0.6s;
     text-align: center;
+    white-space: normal;
+    max-width: 86vw;
+    line-height: 2;
+  }
+  @media (max-width: 640px) {
+    .chrome { font-size: 9px; letter-spacing: 0.24em; }
+    #brand { left: calc(20px + env(safe-area-inset-left, 0px)); }
+    #mute { right: calc(20px + env(safe-area-inset-right, 0px)); }
   }
   body[data-state="play"] #hint { opacity: 0; }
   body[data-state="dead"] #hint { animation: breathe 1.6s ease-in-out infinite; }
@@ -137,7 +156,7 @@
     cvs.width = W * dpr; cvs.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     CX = W / 2; CY = H / 2;
-    R = Math.min(W, H) * 0.30;
+    R = Math.min(W * 0.36, H * 0.30);
   }
   window.addEventListener("resize", resize);
   resize();
@@ -179,8 +198,10 @@
   }
   function sStart() { tone(660, 0.07, "sine", 0.10); }
 
+  const TOUCH = window.matchMedia("(pointer: coarse)").matches;
+  if (TOUCH) hintEl.textContent = "TRYCK NÄR PUNKTEN ÄR I RINGEN";
   function setMuteLabel() {
-    muteEl.textContent = muted ? "LJUD AV — M" : "LJUD PÅ — M";
+    muteEl.textContent = (muted ? "LJUD AV" : "LJUD PÅ") + (TOUCH ? "" : " — M");
   }
   function toggleMute() {
     muted = !muted;
@@ -213,6 +234,7 @@
     if (perfect) labels.push({ a: targetA, t: 0, txt: "PERFEKT +2" });
     spawnTarget();
     sHit(hits, perfect);
+    if (navigator.vibrate) navigator.vibrate(perfect ? 18 : 8);
   }
   function die() {
     state = "dead";
@@ -226,6 +248,7 @@
     }
     hintEl.textContent = "TRYCK FÖR OMSTART";
     sDeath();
+    if (navigator.vibrate) navigator.vibrate(70);
   }
   function press() {
     audio();
@@ -241,9 +264,11 @@
   }
 
   window.addEventListener("pointerdown", (e) => {
+    if (!e.isPrimary) return;
     if (e.target === muteEl) return;
     press();
   });
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
   muteEl.addEventListener("pointerdown", (e) => { e.stopPropagation(); toggleMute(); });
   window.addEventListener("keydown", (e) => {
     if (e.repeat) return;
