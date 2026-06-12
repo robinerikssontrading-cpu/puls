@@ -246,7 +246,7 @@
   let scorePop = 0, ringFlash = 0, shake = 0;
   let ripples = [];              // {a, t, col}
   let labels = [];               // {a, t, txt}
-  let muted = localStorage.getItem("puls.mute") === "1";
+  let muted = false; // ljud alltid på vid start — av-läget gäller bara sessionen
 
   const NEEDLE_R = 8;
 
@@ -314,7 +314,6 @@
   }
   function toggleMute() {
     muted = !muted;
-    localStorage.setItem("puls.mute", muted ? "1" : "0");
     if (master) master.gain.value = muted ? 0 : 1;
     setMuteLabel();
   }
